@@ -41,7 +41,7 @@ in Fig.2 and Fig.3.
 
 An HTML report of the R script can be used to understand the steps of the simulations from used functions to plot making.
 
-The data used is already publicly availabe at https://doi. org/10.5061/dryad.4f4qrfjdm.
+The data used is already publicly availabe at https://doi.org/10.5061/dryad.4f4qrfjdm.
 The dataset included here is simply a streamlined version of the full dataset available in the link above.
 
 ######################
