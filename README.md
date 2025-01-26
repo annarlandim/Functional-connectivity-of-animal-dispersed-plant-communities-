@@ -19,17 +19,14 @@ CONTENTS
 #########
 
 ## Rscript
-1) Functions_and_simulations.R - Basic R script for running the analysis.
+1) Functions_and_simulations.final.R - Basic R script for running the analysis.
 
 ## Rmarkdown
-2) Functions_and_simulations.Rmd - R Markdown document detailing the analysis with explanations.
-
-## HTML reports
-3) Functions_and_simulations.html - HTML output of the R Markdown file for easy viewing in a web browser.
+2) Functions_and_simulations.final.Rmd - R Markdown document detailing the analysis with explanations.
 
 ## CSV files
-4) Manu_bird.community.csv - bird traits
-5) Manu_plant.community.csv - plant traits
+3) Manu_bird.community.csv - bird traits
+4) Manu_plant.community.csv - plant traits
 
 ###########
 DESCRIPTION
@@ -41,7 +38,7 @@ in Fig.2 and Fig.3.
 
 An HTML report of the R script can be used to understand the steps of the simulations from used functions to plot making.
 
-The data used is already publicly availabe at https://doi.org/10.5061/dryad.4f4qrfjdm.
+The data used is already publicly availabe at https://doi.org/10.5061/dryad.4f4qrfjdm .
 The dataset included here is simply a streamlined version of the full dataset available in the link above.
 
 ######################
@@ -49,10 +46,9 @@ HOW TO RUN THE SCRIPTS
 ######################
 
 To execute the analysis contained in this repository, begin by launching RStudio and opening the provided R script 
-(Functions_and_simulations.R) and R Markdown file (Functions_and_simulations.Rmd). You can run the R script directly 
+(Functions_and_simulations.final.R) and R Markdown file (Functions_and_simulations.final.Rmd). You can run the R script directly 
 within RStudio by setting your working directory to the folder containing the script and data files, using the setwd()
 function, and then executing the script using the source() command. This will perform the analysis as defined in the 
 script. For a more detailed walkthrough, open the .Rmd file in RStudio and use the Knit button to compile it 
 into an HTML document (analysis.html), which integrates both code and narrative text, providing a comprehensive view 
-of the analysis steps and results. The HTML file is already compiled and can be viewed directly in any web browser, 
-offering a convenient way to access the analyzed results without running the code.
+of the analysis steps and results. 
