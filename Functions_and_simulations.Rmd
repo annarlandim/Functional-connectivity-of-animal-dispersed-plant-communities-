@@ -1,0 +1,769 @@
+---
+title: "Functional connectivity of animal-dispersed plant communities depend on the
+  interacting effects of network specialization and resource diversity"
+author: "Anna Rebello Landim"
+date: "2024-04"
+output: html_document
+---
+
+This document provides the commented R-code to reproduce the simulations in the paper *Functional connectivity of animal-dispersed plant communities depend on the interacting effects of network specialization and resource diversity*.
+
+{r setup, include=FALSE} knitr::opts_chunk\$set(warning = FALSE, echo = TRUE, fig.align='center', fig.width=6, fig.height=6, fig.show='hold', cache=TRUE, tidy=FALSE, tidy.opts=list(width.cutoff=80), size="small")
+
+```{r}
+library("vegan") 
+library("Hmisc")
+library("dplyr")
+```
+
+## Functions:
+
+**Adapted and original functions from Donoso et al. (2017) and Sorensen et al. (2020):**
+
+```{r}
+## Adapted from Donoso et al. 2017
+
+# Web to estimate fruit preference in the source patch (rowSums = 1):
+makeweb_r <- function(specpar = 1, birdtraits, planttraits, nicheshape="normal"){
+
+  fun_pref <- function(traitdif){
+    if (nicheshape == "normal"){
+      prefs <- dnorm(traitdif, mean = 0, sd=1/specpar)
+    }
+    if (nicheshape == "skewed"){
+      prefs <- dlnorm(traitdif * specpar + exp (-1)) 
+    }
+    prefs
+  }
+  Nplant <- length(planttraits)
+  Nbird <- length(birdtraits)
+  web <- fun_pref(outer(planttraits, birdtraits, "-")*(-1)) 
+  web
+}
+
+# Web to estimate preference to plants in target patch (colSums = 1):
+makeweb_c <- function(specpar = 1, birdtraits, planttraits, nicheshape="normal"){
+  
+  fun_pref <- function(traitdif){
+    if (nicheshape == "normal"){
+      prefs <- dnorm(traitdif, mean = 0, sd=1/specpar)
+    }
+    if (nicheshape == "skewed"){
+      prefs <- dlnorm(traitdif * specpar + exp (-1)) 
+    }
+    prefs
+  }
+  Nplant <- length(planttraits)
+  Nbird <- length(birdtraits)
+  web <- fun_pref(outer(planttraits, birdtraits, "-")*(-1)) 
+  web
+}
+
+# Trait distributions:
+get_skewtr <- function(myN, tr_meanlog = 2, tr_sdlog = 1.5){
+  tr <- qlnorm(seq(0, 1, length.out = myN+2), tr_meanlog, tr_sdlog)[-c(1, myN+2)]
+}
+
+# Interaction network to define dispersal vectors:
+# (uses preference web and interaction frequencies)
+make_trueweb_r <- function(web_p, plantfreq, birdfreq){
+  web_relfreq <- (plantfreq %*% t(birdfreq)) / mean(birdfreq)
+  web_p * web_relfreq
+}
+
+# Interaction network to estimate attractiveness to target patch:
+# (uses preference web and interaction frequencies) 
+make_trueweb_c <- function(web_p, plantfreq){
+  # Since we use this to estimate attractiveness for each bird, 
+  # bird frequencies are always = 1
+  web_p * plantfreq
+}
+
+## Original from Donoso et al. (2017):
+
+# Function used to sample the interaction networks:
+sampleweb <- function(web,obs=NULL,method='perplant'){
+  if(method=='perplant') {
+    if(length(obs)==1){obs <- rep(obs, nrow(web))}
+    if(length(obs)!=nrow(web)){stop("length of obs neither 1 nor matching number of
+                                           species")}
+    sampledweb <- sapply(1:nrow(web), function(i) {
+      web.i <- as.numeric(web[i,])
+      table(sample(factor(1:length(web.i)), obs[i], prob = web.i, replace = TRUE))
+    })
+  }
+  if(method=='percons') {
+    if (length(obs)==1){obs <- rep(obs,ncol(web))}
+    if (length(obs)!=ncol(web)){stop("length of obs neither 1 nor matching number of
+                                           species")}
+    sampledweb <- sapply(1:ncol(web), function(j) {
+      web.j <- web[,j]
+      table(sample(factor(1:length(web.j)),obs[j],prob=web.j,replace=TRUE)) 
+    })
+  }
+  if(method=='perweb'){
+    if (length(obs)!=1){stop("obs must have length 1 with method 'perweb'")}
+    Nobs <- round(obs * ncol(web))
+    sampledweb.vect <- sample(as.factor(1:length(web)), size=Nobs, prob=as.numeric(web),
+                              replace=TRUE)
+    sampledweb <- matrix(as.numeric(table(sampledweb.vect)), nrow=nrow(web)) 
+  }
+  if(method =='rarefy'){
+    if(is.null(obs)) obs <- min(colSums(web)) 
+    if(obs<1){stop("cannot rarefy to less than 1 observation")}
+    sampledweb <- sapply(1:ncol(web), function(j) {
+      web.j <- web[,j]
+      24
+      table(sample(rep(factor(1:length(web.j)),web.j),obs,replace=FALSE)) 
+    })
+  }
+  dimnames(sampledweb) <- dimnames(web)
+  sampledweb
+}
+
+## Original from Sorensen et al. 2020
+
+# Function to convert a web interaction network back to a single frame (column of plant and column of birds) 
+# one row for each interaction, equivalent function for the frame2web function in the bipartite package
+web2frame <- function(x){
+  newplant <- NULL
+  newbird <- NULL
+  new20 <- NULL
+  for (i in 1:nrow(x)) {
+    for (ii in 1:ncol(x)){
+      newplant <- rep(rownames(x[i,]), each = x[i,ii])
+      newbird <- rep(colnames(x[ii]), each = x[i,ii])
+      new10 <- cbind(newplant,newbird)
+      new20 <- rbind(new20, new10)
+    }
+    newplant <- NULL
+    newbird <- NULL
+    new10 <- NULL
+  }
+  return(new20)
+}
+
+# Function to create a single data frame with plants and birds traits:
+matchbirdplanttraits <- function(simulatedframes, obs, N, birdtraits, planttraits) {
+  bird.trait <- rep(NA, obs * N) 
+  fruit.trait <- rep(NA, obs * N) 
+  bird.trait2 <- rep(NA, obs * N)
+  if(length(birdtraits) == 3){
+    for(i in 1:nrow(simulatedframes)) {
+      ti <- match(simulatedframes[i,2], birdtraits$birdnumber)
+      z <- match(simulatedframes[i,1], planttraits$plantnumber)
+      bird.trait[i] <- birdtraits[ti,1]
+      fruit.trait[i] <- planttraits[z,1]
+      bird.trait2[i] <- birdtraits[ti,3]
+    }
+    simulatedframes <- cbind(simulatedframes, bird.trait, fruit.trait, bird.trait2)
+  } else {
+    for(i in 1:nrow(simulatedframes)) {
+      ti <- match(simulatedframes[i,2], birdtraits$birdnumber)
+      z <- match(simulatedframes[i,1], planttraits$plantnumber)
+      bird.trait[i] <- birdtraits[ti,1]
+      fruit.trait[i] <- planttraits[z,1]
+    }
+    simulatedframes <- cbind(simulatedframes, bird.trait, fruit.trait)
+  }}
+
+# Simulation of dispersal distances:
+dispsimulation <- function (x, obs, N) {
+  dispdist <- rep(NA, obs * N) 
+  for(i in 1:nrow(x)) {
+    meanGPThour <- 4.5*x[i,3]^0.5 
+    meanGPT <- meanGPThour*3600
+    scalevalue <- 75311/meanGPT
+    shapevalue <- meanGPT^2/75311
+    GPT <- rgamma(1, shape = shapevalue, scale = scalevalue)
+    meanspeed <- 15.7*x[i,3]^0.17
+    speed <- rnorm(1, meanspeed, 2.078)  
+    max_distance <- speed*GPT
+    distance <- 0.002 * max_distance 
+    if (is.nan (distance)){
+      distance<-NA
+    }
+    dispdist[i] <- distance
+  }
+  x <- cbind(x, dispdist)
+}
+```
+
+**New functions:**
+
+```{r}
+## Estimating probability of seed dispersal success:
+
+distancefilter <- function(patches, Nplant, obs, simulatedframe){
+  
+  dist_filt <- array(dim = c(length(patches), obs, Nplant), dimnames = list(paste0("patch_", patches), paste0("event_", 1:obs), paste0("plant_", 1:Nplant)))
+  
+  for(p in 1:length(patches)){
+    
+    d <- patches[p]
+    
+    for(j in 1:Nplant){
+      
+      disp_dist <- t(matrix(simulatedframe[simulatedframe$newplant == j, "dispdist"]))
+      
+      for(i in 1:length(disp_dist)){
+        if(disp_dist[i]-d < 0){
+          disp_dist[i] <- 0
+        } else {
+          disp_dist[i] <- 1
+        }
+      }
+      dist_filt[p,,j] <- disp_dist
+    }
+  }
+  return(dist_filt)
+}
+
+## Estimating relative attractiveness of target patch:
+
+# Random plant assembly
+
+r_webs_rand <- function(specsparlevel, Nplant, Nbird, Nrep, rec_webs_p){
+  alldata <- vector("list", length = length(specsparlevel))
+  names(alldata) <- paste("Specialization.level", c(specsparlevel), sep="_")
+  
+  for(s in 1:length(specsparlevel)){
+    specspar_data <- vector("list", length = Nplant+1)
+    
+    for(k in 1:(Nplant+1)){ 
+      specspar_data[[k]] <- array(NA, dim = c((Nplant-k+1), Nbird, Nrep))
+    }
+    
+    names(specspar_data) <- paste('Nplant.recipient',Nplant:0, sep='_')
+    
+    for(n in 1:Nrep){
+      web.old <- rec_webs_p[[s]]
+      
+      seq.ran <- sample(rownames(rec_webs_p[[s]]))
+      
+      for(k in 1:(Nplant)){
+        specspar_data[[k]][,,n] <- web.old
+        web.old <- web.old[-which(rownames(web.old)==seq.ran[k]),, drop=FALSE]
+      }
+    }
+    specspar_data[[(Nplant+1)]] <- array(0, dim = c(1, Nbird, Nrep))
+    alldata[[s]] <- specspar_data
+  }
+  return(alldata)
+}
+
+# Relative attractiveness per plant richness in target patch: 
+
+attractivenessfilter <- function(simulatedframes, source_webs_p, recipient_webs, specsparlevel, obs, Nplant, Nrep, Ncons, plant_freq){
+  
+  attrac_filt <- vector("list", length(specsparlevel))
+  names(attrac_filt) <- paste("Specialization_level", c(specsparlevel), sep = "_")
+  
+  for(s in 1:length(specsparlevel)){
+    
+    attrac_filt_ww <- array(dim = c(length(recipient_webs[[s]]), obs, Nplant, Nrep), 
+                            dimnames = list(paste0("re_p_comm_", 1:(length(recipient_webs[[s]]))), 
+                                            paste0("event_", 1:obs), paste0("plant_", 1:Nplant),
+                                            paste0("iteration_",1:Nrep)))
+    
+    for(w in 1:Nplant){
+      
+      rec <- colSums(recipient_webs[[s]][[w]])
+      sourc_rec <- (colSums(plant_freq*source_webs_p[[s]]) + colSums(recipient_webs[[s]][[w]]))
+      attrac <- as.data.frame(rec/sourc_rec)
+      attrac$cons_id <- c(1:Ncons)
+      row.names(attrac) <- NULL
+      
+      for(j in 1:Nplant){
+        
+        simulatedframes_s <- simulatedframes[[s]]
+        attrac_plantcomm <- array(t(matrix(simulatedframes_s[simulatedframes_s$newplant == j, "newbird"])), dim = c(1, obs, Nrep))
+        
+        for(i in 1:obs){
+          for(n in 1:Nrep){
+            id <- match(attrac_plantcomm[,i,n], attrac$cons_id)
+            attrac_plantcomm[,i,n] <- attrac[id, n]
+          }
+        }
+        attrac_filt_ww[w,,j,] <- as.numeric(attrac_plantcomm)
+      }
+    }
+    
+    for(j in 1:Nplant){
+      attrac_filt_ww[Nplant+1,,j,] <- array(0, dim = c(1,obs,n))
+    }
+    attrac_filt[[s]] <- attrac_filt_ww
+  }
+  return(attrac_filt)
+}
+
+## Combining distance and direction:
+
+# For all species:
+reach_prob_webs <- function(recipient_webs, specsparlevel, patches, obs, Nplant, Nrep,
+                            filter_distance_webs, filter_attrac_webs){
+  
+  prob_webs <- vector("list", length(recipient_webs[[1]]))
+  
+  for(w in 1:length(recipient_webs[[1]])){
+    
+    probs_web_w <- vector("list", length(specsparlevel))
+    
+    for(s in 1:length(specsparlevel)){
+      
+      probs_s <- array(dim = c(length(patches),obs, Nplant, Nrep), 
+                       dimnames = list(paste0("patch_", patches), 
+                                       paste0("event_", 1:obs), 
+                                       paste0("plant_", 1:Nplant),
+                                       paste0("iteration_", 1:Nrep)))
+      
+      for(i in 1:Nplant){
+        for(n in 1:Nrep){
+          prob_plant_i <- sweep(filter_distance_webs[[s]][,,i], 2, filter_attrac_webs[[s]][w,,i,n], "*")
+          
+          probs_s[,,i,n] <- prob_plant_i
+        }
+      }
+      probs_web_w[[s]] <- probs_s
+    }
+    names(probs_web_w) <- paste("Specialization_level", c(specsparlevel), sep = "_")
+    prob_webs[[w]] <- probs_web_w  
+  }
+  names(prob_webs) <- paste("Plant_Rich", Nplant:0, sep = "_")
+  return(prob_webs)
+}
+
+# Combining species result into community of seeds dispersed to target patches:
+seeds_reaching_webs <- function(reach_prob_webs, specsparlevel, Nplant, Nrep, patches){
+  
+  n_seeds_webs <- vector("list", length(specsparlevel))
+  
+  for(s in 1:length(specsparlevel)){
+    
+    n_seeds <- array(NA, dim = c(length(patches), Nplant, Nrep),  
+                     dimnames = list(paste0("Patch_", patches),
+                                     paste0("Plant_",c(1:Nplant)), paste0("Iteration_", c(1:Nrep))))
+    
+    reach_prob <- reach_prob_webs[[s]]
+    
+    for(i in 1:Nplant){
+      for(n in 1:Nrep){
+        n_seeds_plant_i <- reach_prob[,,i,n]
+        n_seeds_plant_i <- rowSums(n_seeds_plant_i)
+        n_seeds[,i,n] <- n_seeds_plant_i 
+      }
+    }   
+    n_seeds_webs[[s]] <- n_seeds
+  }
+  names(n_seeds_webs) <- paste("Specialization_level", c(specsparlevel), sep = "_")
+  return(n_seeds_webs)
+}
+
+# Number and diversity of reaching seeds:
+dispersal_dimensions <- function(Nplant, specsparlevel, Nrep, patches, n_seeds_reaching_webs, plant_trait, recipient_webs, plant_freq, obsperplant){
+  Dispersed <- vector("list", length = (Nplant+1))
+  
+  for(w in 1:(Nplant+1)){
+    
+    Dispersed_webs <- vector("list", length = length(specsparlevel))
+    
+    for(s in 1:length(specsparlevel)){
+      
+      disp <- vector("list", length = Nrep)
+      
+      for (n in 1:Nrep){ 
+        disp_it <- as.data.frame(c(patches))
+        colnames(disp_it)[1] <- "Distance"
+        disp_it$Spec.par.level <- as.factor(rep(specsparlevel[s], times = length(patches)))
+        # Richness_recipient
+        if(w==(Nplant+1)){
+          disp_it$Rich_recipient <- rep((0), times = length(patches))
+        } else {disp_it$Rich_recipient <- rep(as.numeric(c(Nplant:0)[w]), times = length(patches))}
+        # Estimations
+        disp_it$Abundance <- rowSums(n_seeds_reaching_webs[[w]][[s]][,,n]) 
+        disp_it$Diversity <- exp(diversity(n_seeds_reaching_webs[[w]][[s]][,,n], index="shannon"))
+        disp[[n]] <- disp_it  
+      } 
+      Dispersed_webs[[s]] <- bind_rows(disp)
+    }
+    Dispersed[[w]] <- bind_rows(Dispersed_webs)
+  }
+  return(bind_rows(Dispersed))
+}
+```
+
+## Simulated plant and bird communities:
+
+We used empirical trait data from plant and bird communities in Manú Biosphere Reserve, Peru.
+
+```{r}
+# Empirical plant community:
+Plants <- read.csv("Manu_plant.community.csv")
+
+# Empirical bird community:
+Birds <- read.csv("Manu_bird.community.csv")
+```
+
+This data was used to simulate seed-dispersal networks for a community composed of 60 bird and 50 plant species.
+
+**(I): Generate the simulated species pool**
+
+```{r}
+Nbird <- 60
+Nplant <- 50
+```
+
+**(II): Draw trait values**
+
+We use mean and standard deviation of the empirical communities to create trait distributions of our simulated communities.
+
+```{r}
+
+### Get mean and standard deviation from empirical communities:
+
+## Traits related to birds' fruit preferences:
+
+# Fruit width
+p_fw_meanlog <- mean(log(Plants$Fruit.D1.mm))
+p_fw_sdlog <- sd(log(Plants$Fruit.D1.mm))
+
+# Bill width
+b_bw_meanlog <- mean(log(Birds$Bill.width.mm)) 
+b_bw_sdlog <- sd(log(Birds$Bill.width.mm))
+
+## Traits related to primarily used forest strat:
+
+# Height
+p_h_meanlog <- mean(log(Plants$Plant.height.m))
+p_h_sdlog <- sd(log(Plants$Plant.height.m))
+
+# Wing Pointdness
+b_wp_meanlog <- mean(log(Birds$Kipp_index))
+b_wp_sdlog <- sd(log(Birds$Kipp_index))
+
+### Estimate distributions with mean and standard deviation from the empirical communities:
+
+## Traits related to birds' fruit preferences:
+
+# Fruit width
+fit_p_fw <- get_skewtr(Nplant, p_fw_meanlog, p_fw_sdlog) 
+
+# Bill width
+fit_b_bw <- get_skewtr(Nbird, b_bw_meanlog, b_bw_sdlog)
+
+## Traits related to primarily used forest strat:
+
+# Height
+fit_p_h <- get_skewtr(Nplant, p_h_meanlog, p_h_sdlog) 
+
+# Wing Pointdness
+fit_b_wp <- get_skewtr(Nbird, b_wp_meanlog, b_wp_sdlog)
+```
+
+**(III) Estimate interaction frequencies:**
+
+We used fruit size and avian body mass to estimate interaction frequencies.
+
+```{r}
+
+# Plants: We assume the relationship: y=1/x
+p_v <- Plants$Fruit.length.mm * Plants$Fruit.D1.mm * Plants$Fruit.D2.mm
+
+p_v_meanlog <- mean(log(na.omit(p_v)^(1/3)))
+p_v_sdlog <- sd(log(na.omit(p_v)^(1/3)))
+fit_p_v <- get_skewtr(Nplant, p_v_meanlog, p_v_sdlog) 
+
+YES_pl_freq <- (1/fit_p_v)/mean((1/fit_p_v)) 
+
+# Birds: We assume a negative relationship: y=(1/x)+b, where b is thee undercompensation parameter set to the 10% of the maximum value of 1/x
+b_bm_meanlog <- mean(log(Birds$Bodymass.g^(1/3))) 
+b_bm_sdlog <- sd(log(Birds$Bodymass.g^(1/3))) 
+fit_b_bm <- (get_skewtr(Nbird, b_bm_meanlog, b_bm_sdlog))
+
+v10 <- max(1/fit_b_bm)/10
+YES_bird_freq <- ((1/fit_b_bm) + v10)/mean((1/fit_b_bm)+v10) 
+```
+
+## Interaction networks:
+
+Using the trait values and interaction frequencies from our simulated plant and bird communities, we built seed-dispersal networks to define the vectors of seed dispersal in the source patch. We varied network specialization levels to test its effect on plant functional connectivity.
+
+**(IV) Generate the seed dispersal networks:**
+
+```{r}
+# Set specialization parameter levels
+networkreplicates <- 1
+specsparlevel <- c(
+  rep(1.5, networkreplicates) # H2' = 0.1587484
+  , 
+  rep(5, networkreplicates) # 0.308189
+  ,
+  rep(10, networkreplicates) # 0.4556191
+  ,
+  rep(20, networkreplicates) # 0.6532462
+)
+
+# Interaction probabilities according to trait matching (bill x fruit width and wing pointedness and plant height)
+webs_p_2 <- vector("list", length(specsparlevel))
+webs_p_t1 <- lapply(specsparlevel, makeweb_r, birdtraits = as.vector(decostand(fit_b_bw, "range")), planttraits = as.vector(decostand(fit_p_fw, "range")),
+                    nicheshape = "skewed")
+webs_p_t2 <- lapply(specsparlevel, makeweb_r, birdtraits = as.vector(decostand(fit_b_wp, "range")), planttraits = as.vector(decostand(fit_p_h, "range")),
+                    nicheshape = "normal")
+for(i in 1:length(specsparlevel)){
+  t1t2 <- webs_p_t1[[i]]*webs_p_t2[[i]]
+  t1t2 <- t1t2 / matrix(rowSums(t1t2), nrow = Nplant, ncol = Nbird)
+  webs_p_2[[i]] <- t1t2
+}
+
+# Interaction networks built using interaction frequencies and interaction probabilites:
+webs_2 <- lapply(webs_p_2, make_trueweb_r, birdfreq=YES_bird_freq, plantfreq=YES_pl_freq)
+funct <- function(x){x/matrix(rowSums(x)/YES_pl_freq, nrow=Nplant, ncol=Nbird)}
+webs_2 <- lapply(webs_2, funct)
+```
+
+**(V) Sample the seed-dispersal networks:**
+
+Using the simulated seed-dispersal networks, we sampled 100 seed-dispersal events (observations) per plant species in the source patch.
+
+```{r}
+obsperplant <- 100 
+
+webs_largesamp_2 <- lapply(webs_2, sampleweb, obs=obsperplant, method='perplant')
+webs_largesamp_2 <- lapply(webs_largesamp_2, t)
+for(i in 1:length(webs_largesamp_2)){
+  colnames(webs_largesamp_2[[i]]) <- c(1:Nbird)
+  rownames(webs_largesamp_2[[i]]) <- c(1:Nplant)
+  webs_largesamp_2[[i]] <- as.data.frame(webs_largesamp_2[[i]]) 
+}
+```
+
+## Seed dispersal distances
+
+We estimated the distance of seed dispersal events using bird body mass. Seed-dispersal success was estimated based on the difference between seed-dispersal distance and between-patch distance.
+
+**(VI) Estimate dispersal distances for each event**
+
+```{r}
+# Bird traits (for data frame)
+b_bm_meanlog_dist <- mean(log(Birds$Bodymass.g)) 
+b_bm_sdlog_dist <- sd(log(Birds$Bodymass.g)) 
+fit_b_bm_dist <- (get_skewtr(Nbird, b_bm_meanlog_dist, b_bm_sdlog_dist))/1000
+
+fit_b_bm_df <- as.data.frame(fit_b_bm_dist)
+fit_b_bw_df <- as.data.frame(fit_b_bw)
+
+birdtrait <- as.data.frame(cbind(fit_b_bm_df, as.character(c(1:Nbird)), fit_b_bw_df))
+colnames(birdtrait)[2] <- "birdnumber"
+
+# Plant trait (for data frame)
+fit_p_fw_df <- as.data.frame(fit_p_fw)
+
+planttrait <- as.data.frame(cbind(fit_p_fw_df, as.character(c(1:Nplant))))
+colnames(planttrait)[2] <- "plantnumber"
+
+# Creating data frames with simulated dispersal distances of all seed-dispersal events of each plant species in the source patch
+simulatedframes_2 <- lapply(webs_largesamp_2, web2frame)
+simulatedframes_2 <- lapply(simulatedframes_2, as.data.frame)
+simulatedframes_2 <- lapply(simulatedframes_2, matchbirdplanttraits, obs = obsperplant, 
+                            N = Nplant, birdtraits = birdtrait, planttraits = planttrait) 
+simulatedframes_2 <- lapply(simulatedframes_2, dispsimulation, obs = obsperplant, N = Nplant)
+```
+
+**(VII) Calculate reacheable patches**
+
+```{r}
+# Simulated between-patch distances
+patches <- c(seq(from = 0, to = 600, by = 10))
+
+# Calculate difference between seed-dispersal and between-patch distances to calculate reacheable patches
+filter_distance_webs_2 <- lapply(simulatedframes_2, distancefilter, patches = patches,
+                                 Nplant = Nplant, obs = obsperplant)
+```
+
+## Direction: target patches
+
+Here we simulate plant community assembly at the target patch, with iterations sequentially increasing plant richnes form 0 to 50 plant species in the target patch. Then, we estimate the relative attractivness of the target patch at each step along the assembly sequence. The relative attractivness value was used to estimate the probability of bird movement direction to the target patch.
+
+**(VIII) Make assembly sequences in the target patch**
+
+```{r}
+
+# Setting number of iterations
+Nrep <- 100 
+
+# Interaction probabilities between seed dispersers and plants in the target patch (i.e., estimating fruit preferences)
+rec_webs_p_2 <- vector("list", length = length(specsparlevel))
+
+for(s in 1:length(specsparlevel)){
+  rec_webs_p_t1 <- makeweb_c(specpar=specsparlevel[[s]], birdtraits = as.vector(decostand(fit_b_bw, "range")), 
+                             planttraits = as.vector(decostand(fit_p_fw, "range")),
+                             nicheshape = "skewed")
+  
+  rec_webs_p_t2 <- makeweb_c(specpar=specsparlevel[[s]], birdtraits = as.vector(decostand(fit_b_wp, "range")), 
+                             planttraits = as.vector(decostand(fit_p_h, "range")),
+                             nicheshape = "normal")
+  
+  t1t2 <- (rec_webs_p_t1*rec_webs_p_t2)
+  t1t2 <- t1t2 / matrix(rowSums(t1t2), nrow = Nplant, ncol = Nbird)
+  true_t1t2 <- make_trueweb_c(t1t2, YES_pl_freq)
+  
+  rec_webs_p_2[[s]] <- true_t1t2
+  
+}
+
+for(i in 1:length(specsparlevel)) { 
+  dimnames(rec_webs_p_2[[i]]) <- list(paste('p',1:Nplant,sep=''),paste('b',1:Nbird,sep='')) 
+}
+
+# Simulating plant assemblies at target patch
+
+rec_webs_2 <- r_webs_rand(specsparlevel, Nplant, Nbird, Nrep, rec_webs_p_2)
+```
+
+**(IX) Calculate relative attractiveness**
+
+```{r}
+filter_attrac_webs_2 <- attractivenessfilter(simulatedframes=simulatedframes_2, 
+                                                  source_webs_p = webs_p_2,
+                                                  recipient_webs=rec_webs_2, 
+                                                  specsparlevel=specsparlevel, 
+                                                  obs=obsperplant, 
+                                                  Nplant=Nplant, 
+                                                  Nrep = Nrep,
+                                                  Ncons=Nbird, plant_freq = YES_pl_freq)
+```
+
+## Community-level plant functional connectivity
+
+We integrate the results from distance and direction by multiplying the resulting matrices from both analyses. In that way, if a seed is able to reach a certain patch (seed-dispersal distance \>= between-patch distance), the probability of the animal seed disperser moving in direction of a target patch is defined by the target patch's relative attractiveness. Based on these results, we quantified both the number and diversity of seeds arriving at the target patch.
+
+**(X) Estimate number of seeds that reach the target patch**
+
+```{r}
+# Probability of seeds reaching the target patch per seed-dispersal event
+seeds_reach_prob_webs_2 <- reach_prob_webs(recipient_webs = rec_webs_2, specsparlevel = specsparlevel, patches = patches, obs = obsperplant, Nplant = Nplant, Nrep = Nrep,
+                                           filter_distance_webs = filter_distance_webs_2, filter_attrac_webs = filter_attrac_webs_2)
+
+# Total number of seeds reaching the target patch (sum over the probabilities per species)
+n_seeds_reaching_webs_2 <- lapply(seeds_reach_prob_webs_2, seeds_reaching_webs,
+                                  specsparlevel = specsparlevel, Nplant=Nplant, 
+                                  Nrep=Nrep, patches=patches)
+
+# Applying a threshold for the number of seeds that reach the recipient patch.
+# *If the total number of seeds of a certain species reaching the target patch is below 1, we set the number of seeds to 0, indicating that no seeds from that plant species reached the target patch in that scenario of between-patch distance and plant richness of the target patch.
+
+t_1 <- vector("list", length = length(n_seeds_reaching_webs_2))
+for(r in 1:length(n_seeds_reaching_webs_2)){
+  s_1 <- vector("list", length(specsparlevel))
+  for(s in 1:length(specsparlevel)){
+    s_1[[s]] <- ifelse(n_seeds_reaching_webs_2[[r]][[s]] < 1.0, 0, n_seeds_reaching_webs_2[[r]][[s]])
+  }
+  names(s_1) <- paste("Specialization_level", c(specsparlevel), sep = "_")
+  t_1[[r]] <- s_1
+}
+names(t_1) <- paste("Plant_Rich", Nplant:0, sep = "_")
+```
+
+**(XI) Estimate plant diversity in the target patch**
+
+```{r}
+disp_dim_2 <- dispersal_dimensions(Nplant, specsparlevel, Nrep, patches, t_1, fit_p_fw, rec_webs_2, YES_pl_freq, obsperplant)
+```
+
+# Plots
+
+```{r}
+# Mean and confidence intervals
+CI_2 <- disp_dim_2 %>%
+  dplyr::group_by(Spec.par.level, Distance, Rich_recipient) %>%
+  dplyr::summarise(
+    mean_diversity = mean(Diversity),
+    mean_abundance = mean(Abundance),
+    low.q_diversity = quantile(Diversity, probs = 0.025),
+    low.q_abundance = quantile(Abundance, probs = 0.025),
+    high.q_diversity = quantile(Diversity, probs = 0.975),
+    high.q_abundance = quantile(Abundance, probs = 0.975))
+
+library("ggplot2")
+
+CI_2$Spec.par.level <- as.factor(CI_2$Spec.par.level)
+
+# Number of seeds
+
+ggplot(CI_2[CI_2$Distance==10,], # Here you can set the distance you want to plot
+       aes(log(Rich_recipient), mean_abundance, colour = Spec.par.level)) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = low.q_abundance, ymax = high.q_abundance, fill = Spec.par.level), linetype = 0, alpha = 0.2) +
+  geom_segment(aes(x = -Inf, y = 500, xend = log(50), yend = 500), linetype = "dotted", linewidth = .9, colour = "red") +
+  scale_color_manual(values = c("#FF595E", "#FFCA3A", "#8AC926", "#1982C4", "#6A4C93")) +  
+  scale_fill_manual(values = c("#FF595E", "#FFCA3A", "#8AC926", "#1982C4", "#6A4C93")) + 
+  scale_y_continuous(limits = c(0, 2500), breaks = c(0, 500, 1000, 1500, 2000, 2500), labels = c(0, 500, 1000, 1500, 2000, 2500)) + # 10 and 50m
+  # scale_y_continuous(limits = c(0, 800), breaks = c(0, seq(from=100, to=800, by=100)), labels = c(0,  seq(from=100, to=800, by=100))) + # 100 and 250m
+  scale_x_continuous(breaks = c(log(c(1, 2:6, 8, 15, 25, 50))), labels = c(1, 2:6, 8, 15, 25, 50)) +
+  guides(colour = "none") +
+  theme_classic() +
+  theme(axis.title = element_blank(), axis.text = element_text(size=12), legend.position = "none",
+        axis.title.x = element_blank(), axis.title.y = element_blank(),  plot.margin = margin(t = 0.5, b = 1.5, l = 1.5, r = 0.5, unit = "lines"))
+
+
+# Seed diversity
+ggplot(CI_2[CI_2$Distance==100,] # Here you can set the distance you want to plot
+       , aes(log(Rich_recipient), mean_diversity, colour = Spec.par.level)) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = low.q_diversity, ymax = high.q_diversity, fill = Spec.par.level), linetype = 0, alpha = 0.2) +
+  geom_segment(aes(x = -Inf, y = 10, xend = log(50), yend = 10), linetype = "dotted", linewidth = .9, colour = "red") +
+  scale_color_manual(values = c("#FF595E", "#FFCA3A", "#8AC926", "#1982C4")) +  
+  scale_fill_manual(values = c("#FF595E", "#FFCA3A", "#8AC926", "#1982C4")) + 
+  ylim(c(0,50)) +
+  scale_x_continuous(breaks = c(log(c(1, 2:6, 8, 15, 25, 50))), labels = c(1, 2:6, 8, 15, 25, 50)) +
+  guides(colour = "none") +
+  theme_classic() +
+  theme(axis.title = element_blank(), axis.text = element_text(size=12), legend.position = "none",
+        axis.title.x = element_blank(), axis.title.y = element_blank())
+
+## Smoothing for 250m:
+CI_2.2 <- CI_2 %>%
+  mutate(Rich_recipient_log = log(Rich_recipient+1))
+
+filtered_data <- CI_2.2 %>%
+  filter(Distance == 250 & Spec.par.level != 0.5)
+
+loess_span <- 4  
+
+data_to_smooth <- filtered_data %>% filter(Rich_recipient >= 20)
+data_no_smooth <- filtered_data %>% filter(Rich_recipient < 20) 
+
+smoothed_means <- data_to_smooth %>%
+  group_by(Spec.par.level) %>%
+  do({
+    model <- loess(mean_diversity ~ Rich_recipient_log, data = ., span = loess_span)
+    data.frame(Rich_recipient_log = .$Rich_recipient_log, pred = predict(model, se = FALSE))
+  })
+
+smoothed_confidence <- data_to_smooth %>%
+  group_by(Spec.par.level) %>%
+  do({
+    model_lower <- loess(low.q_diversity ~ Rich_recipient_log, data = ., span = loess_span)
+    model_upper <- loess(high.q_diversity ~ Rich_recipient_log, data = ., span = loess_span)
+    data.frame(Rich_recipient_log = .$Rich_recipient_log, lower = predict(model_lower), upper = predict(model_upper))
+  })
+
+combined_means <- rbind(smoothed_means, data_no_smooth %>% mutate(pred = mean_diversity))
+combined_confidence <- rbind(smoothed_confidence, data_no_smooth %>% mutate(lower = low.q_diversity, upper = high.q_diversity))
+
+combined_means <- combined_means %>% mutate(un_rr = exp(Rich_recipient_log) - 1)
+combined_confidence <- combined_confidence %>% mutate(un_rr = exp(Rich_recipient_log) - 1)
+
+ggplot() +
+  geom_line(data = combined_means, linewidth = 1, aes(x = log(un_rr), y = pred, colour = Spec.par.level)) +
+  geom_ribbon(data = combined_confidence, aes(x = log(un_rr), ymin = lower-.1, ymax = upper, fill = Spec.par.level), alpha = 0.2) +
+  geom_segment(aes(x = -Inf, y = 10, xend = log(50), yend = 10), linetype = "dotted", linewidth = .9, colour = "red") +
+  scale_color_manual(values = c("#FF595E", "#FFCA3A", "#8AC926", "#1982C4")) +  
+  scale_fill_manual(values = c("#FF595E", "#FFCA3A", "#8AC926", "#1982C4")) + 
+  scale_y_continuous(limits = c(0, 10), breaks = c(0:10), labels = c(0:10)) + 
+  scale_x_continuous(breaks = c(log(c(1, 2:6, 8, 15, 25, 50))), labels = c(1, 2:6, 8, 15, 25, 50)) +
+  guides(colour = "none") +
+  theme_classic() +
+  theme(axis.title = element_blank(), axis.text = element_text(size=12), legend.position = "none",
+        axis.title.x = element_blank(), axis.title.y = element_blank())
+```
