@@ -385,8 +385,8 @@ Plants <- read.csv("Manu_plant.community.csv")
 # Empirical bird community:
 Birds <- read.csv("Manu_bird.community.csv")
 
-Nbird <- 6
-Nplant <- 5
+Nbird <- 60
+Nplant <- 50
 
 ### Get mean and standard deviation from empirical communities:
 
